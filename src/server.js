@@ -5,6 +5,7 @@ import { Server } from "socket.io";
 import http from "http";
 import path from "path";
 import { fileURLToPath } from "url"
+import * as Y from "yjs";
 
 dotenv.config();
 
@@ -12,7 +13,7 @@ const app= express();
 app.use(cors());
 const __fileName= fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__fileName);
-console.log("Import:", import.meta)
+// console.log("Import:", import.meta)
 const httpServer= http.createServer(app);
 
 const io= new Server(httpServer, {
@@ -23,6 +24,17 @@ const io= new Server(httpServer, {
 
 const documents= {};
 
+export function getYDoc(docId){
+    if(!documents[docId]){
+        const yDoc= new Y.Doc();
+        documents[docId]={
+            yDoc,
+            users: new Set(),
+        }
+    };
+    return documents[docId];
+}
+
 app.get("/api/health/check", (req, res)=> {
     console.log("=====> Health Check Triggered");
     return res.status(200).send({status: "Healthy"})
@@ -32,27 +44,25 @@ io.on("connection", (socket)=> {
     console.log("user Connected: ",socket.id);
 
     socket.on("join-document", (docId)=> {
+        const doc= getYDoc(docId)
         socket.join(docId);
+        doc.users.add(socket.id)
 
-        if(!documents[docId]){
-            documents[docId] = "";
-        }
+        // send current state to client
+        const state= Y.encodeStateAsUpdate(doc.yDoc)
+        socket.emit("load-document", state);
 
-        socket.emit("load-document", documents[docId]);
+        // listen for updates from client
+        socket.on("send-update", (update)=>{
+            Y.applyUpdate(doc.yDoc, update);
+
+            // broadcast to others
+            socket.to(docId).emit("receive-update", update);
+        })
+        socket.on("disconnect", ()=>{
+            doc.users.delete(socket.id)
+        })
     });
-
-    socket.on("send-changes",({docId, operation}) => {
-        let doc = documents[docId];
-        if (operation.type === "insert") {
-            doc = insert(doc, operation.position, operation.value);
-        } else if (operation.type === "delete") {
-            doc = remove(doc, operation.position, operation.length);
-        }
-
-        documents[docId] = doc;
-
-        socket.to(docId).emit("receive-changes", operation);
-    })
 
     socket.on("disconnect",()=>{
         console.log("User disconnected: ",socket.id);
