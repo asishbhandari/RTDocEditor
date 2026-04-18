@@ -4,7 +4,8 @@ import cors from "cors";
 import { Server, Socket } from "socket.io";
 import http from "http";
 import * as Y from "yjs";
-import { getYDoc } from "./store/documentStore.js"
+import { getYDoc, documents } from "./store/documentStore.js"
+import { DocumentState } from "./types/documents.js";
 
 dotenv.config();
 
@@ -13,11 +14,41 @@ app.use(cors());
 
 const httpServer= http.createServer(app);
 
+async function getSnapshot(doc: DocumentState): Promise<Uint8Array> {
+  if (doc.snapshotCache && !doc.isDirty) {
+    return doc.snapshotCache;
+  }
+
+  if (doc.snapshotPromise) {
+    return doc.snapshotPromise;
+  }
+
+  doc.snapshotPromise = (async () => {
+    const snapshot = Y.encodeStateAsUpdate(doc.yDoc);
+
+    doc.snapshotCache = snapshot;
+    doc.isDirty = false;
+    doc.snapshotPromise = null;
+
+    return snapshot;
+  })();
+
+  return doc.snapshotPromise;
+}
+
 const io= new Server(httpServer, {
     cors: {
         origin: "*"
     },
 });
+
+setInterval(() => {
+  Object.values(documents).forEach((doc) => {
+    if (doc.isDirty && !doc.snapshotPromise) {
+      doc.snapshotPromise = getSnapshot(doc);
+    }
+  });
+}, 5000);
 
 app.get("/api/health/check", (req, res)=> {
     console.log("=====> Health Check Triggered");
@@ -33,19 +64,28 @@ io.on("connection", (socket: Socket)=> {
         doc.users.add(socket.id)
 
         // send current state to client
-        const state= Y.encodeStateAsUpdate(doc.yDoc)
-        socket.emit("load-document", state);
+        // const state= Y.encodeStateAsUpdate(doc.yDoc)
+        // socket.emit("load-document", state);
+        getSnapshot(doc).then((snapshot) => {
+            socket.emit("load-document", snapshot);
+        });
 
         // listen for updates from client
-        socket.on("send-update", (update: Uint8Array)=>{
-            Y.applyUpdate(doc.yDoc, update);
+        socket.on("send-update", (update: Uint8Array) => {
+            try {
+                Y.applyUpdate(doc.yDoc, update);
 
-            // broadcast to others
-            socket.to(docId).emit("receive-update", update);
-        })
+                doc.isDirty = true;
+
+                socket.to(docId).emit("receive-update", update);
+            } catch (err) {
+                console.error("Invalid update", err);
+            }
+        });
+        
         socket.on("disconnect", ()=>{
             doc.users.delete(socket.id)
-        })
+        });
     });
 
     socket.on("disconnect",()=>{
