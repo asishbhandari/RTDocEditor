@@ -58,7 +58,7 @@ app.get("/api/health/check", (req, res)=> {
 io.on("connection", (socket: Socket)=> {
     console.log("user Connected: ",socket.id);
 
-    socket.on("join-document", (docId: string)=> {
+    socket.on("join-document", async({ docId, stateVector,}:{docId: string, stateVector: Uint8Array})=> {
         const doc= getYDoc(docId)
         socket.join(docId);
         doc.users.add(socket.id)
@@ -66,9 +66,19 @@ io.on("connection", (socket: Socket)=> {
         // send current state to client
         // const state= Y.encodeStateAsUpdate(doc.yDoc)
         // socket.emit("load-document", state);
-        getSnapshot(doc).then((snapshot) => {
-            socket.emit("load-document", snapshot);
-        });
+        let update: Uint8Array;
+        if (!stateVector || stateVector.length === 0) {
+            // New user → send snapshot
+            update = await getSnapshot(doc);
+        } else {
+            // Returning user → send only missing updates
+            update = Y.encodeStateAsUpdate(doc.yDoc, stateVector);
+        }
+        
+        // getSnapshot(doc).then((snapshot) => {
+        //     socket.emit("load-document", snapshot);
+        // });
+        socket.emit("load-document", update);
 
         // listen for updates from client
         socket.on("send-update", (update: Uint8Array) => {
