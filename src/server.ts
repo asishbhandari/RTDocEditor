@@ -6,6 +6,7 @@ import http from "http";
 import * as Y from "yjs";
 import { getYDoc, documents } from "./store/documentStore.js"
 import { DocumentState } from "./types/documents.js";
+import { pubClient, subClient} from "./redis.js"
 
 dotenv.config();
 
@@ -13,6 +14,8 @@ const app= express();
 app.use(cors());
 
 const httpServer= http.createServer(app);
+const CHANNEL= "doc-updates";
+const SERVER_ID = Math.random().toString();
 
 async function getSnapshot(doc: DocumentState): Promise<Uint8Array> {
   if (doc.snapshotCache && !doc.isDirty) {
@@ -82,12 +85,19 @@ io.on("connection", (socket: Socket)=> {
 
         // listen for updates from client
         socket.on("send-update", (update: Uint8Array) => {
+            if(!doc || !docId) return;
             try {
                 Y.applyUpdate(doc.yDoc, update);
-
                 doc.isDirty = true;
 
                 socket.to(docId).emit("receive-update", update);
+
+                // Publish to redis
+                pubClient.publish(CHANNEL, JSON.stringify({
+                    docId: docId,
+                    update: Array.from(update),
+                    source: SERVER_ID,
+                }))
             } catch (err) {
                 console.error("Invalid update", err);
             }
@@ -101,6 +111,18 @@ io.on("connection", (socket: Socket)=> {
     socket.on("disconnect",()=>{
         console.log("User disconnected: ",socket.id);
     })
+});
+
+subClient.subscribe(CHANNEL, (message)=>{
+    const { docId, update, source } = JSON.parse(message);
+    // Ignore self messages
+    if (source === SERVER_ID) return;
+
+    const doc = getYDoc(docId);
+
+    Y.applyUpdate(doc.yDoc, new Uint8Array(update));
+    // Broadcast to local clients
+    io.to(docId).emit("receive-update", new Uint8Array(update));
 })
 
 const PORT = process.env.PORT || 3003
