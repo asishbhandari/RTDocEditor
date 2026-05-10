@@ -41,7 +41,8 @@ async function getSnapshot(doc: DocumentState): Promise<Uint8Array> {
 
 const io= new Server(httpServer, {
     cors: {
-        origin: "*"
+        origin: "http://localhost:5173",
+        methods:["GET", "POST"]
     },
 });
 
@@ -81,21 +82,22 @@ io.on("connection", (socket: Socket)=> {
         // getSnapshot(doc).then((snapshot) => {
         //     socket.emit("load-document", snapshot);
         // });
-        socket.emit("load-document", update);
+        socket.emit("load-document", Array.from(update));
 
         // listen for updates from client
-        socket.on("send-update", (update: Uint8Array) => {
+        socket.on("send-update", (update: number[]) => {
             if(!doc || !docId) return;
             try {
-                Y.applyUpdate(doc.yDoc, update);
+                const Uint8Update= new Uint8Array(update)
+                Y.applyUpdate(doc.yDoc, Uint8Update);
                 doc.isDirty = true;
 
-                socket.to(docId).emit("receive-update", update);
+                socket.to(docId).emit("receive-update", Array.from(Uint8Update));
 
                 // Publish to redis
                 pubClient.publish(CHANNEL, JSON.stringify({
                     docId: docId,
-                    update: Array.from(update),
+                    update: Array.from(Uint8Update),
                     source: SERVER_ID,
                 }))
             } catch (err) {
